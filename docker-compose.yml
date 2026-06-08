@@ -1,0 +1,165 @@
+services:
+  jenkins:
+    build: .
+    container_name: jenkins
+    restart: unless-stopped
+    user: root
+
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+
+  defectdojo-nginx:
+    image: defectdojo/defectdojo-nginx:latest
+    container_name: defectdojo-nginx
+    restart: unless-stopped
+    depends_on:
+      - defectdojo-uwsgi
+    ports:
+      - "8081:8080"
+    environment:
+      DD_UWSGI_HOST: defectdojo-uwsgi
+      DD_UWSGI_PORT: "3031"
+    volumes:
+      - defectdojo_media:/usr/share/nginx/html/media
+
+  defectdojo-uwsgi:
+    image: defectdojo/defectdojo-django:latest
+    container_name: defectdojo-uwsgi
+    restart: unless-stopped
+    depends_on:
+      defectdojo-initializer:
+        condition: service_completed_successfully
+      defectdojo-postgres:
+        condition: service_started
+      defectdojo-redis:
+        condition: service_started
+    entrypoint:
+      - /wait-for-it.sh
+      - defectdojo-postgres:5432
+      - -t
+      - "60"
+      - --
+      - /entrypoint-uwsgi.sh
+    environment:
+      DD_DEBUG: "False"
+      DD_ALLOWED_HOSTS: "*"
+      DD_DATABASE_URL: postgresql://${DEFECTDOJO_DB_USER:-defectdojo}:${DEFECTDOJO_DB_PASSWORD:-defectdojo}@defectdojo-postgres:5432/${DEFECTDOJO_DB_NAME:-defectdojo}
+      DD_CELERY_BROKER_URL: redis://defectdojo-redis:6379/0
+      DD_SECRET_KEY: ${DEFECTDOJO_SECRET_KEY:-replace-me-with-a-long-random-secret}
+      DD_CREDENTIAL_AES_256_KEY: ${DEFECTDOJO_CREDENTIAL_AES_256_KEY:-replace-me-with-a-32-char-key}
+      DD_DATABASE_READINESS_TIMEOUT: "60"
+    volumes:
+      - ./docker/extra_settings:/app/docker/extra_settings
+      - defectdojo_media:/app/media
+
+  defectdojo-celerybeat:
+    image: defectdojo/defectdojo-django:latest
+    container_name: defectdojo-celerybeat
+    restart: unless-stopped
+    depends_on:
+      defectdojo-initializer:
+        condition: service_completed_successfully
+      defectdojo-postgres:
+        condition: service_started
+      defectdojo-redis:
+        condition: service_started
+    entrypoint:
+      - /wait-for-it.sh
+      - defectdojo-postgres:5432
+      - -t
+      - "60"
+      - --
+      - /entrypoint-celery-beat.sh
+    environment:
+      DD_DATABASE_URL: postgresql://${DEFECTDOJO_DB_USER:-defectdojo}:${DEFECTDOJO_DB_PASSWORD:-defectdojo}@defectdojo-postgres:5432/${DEFECTDOJO_DB_NAME:-defectdojo}
+      DD_CELERY_BROKER_URL: redis://defectdojo-redis:6379/0
+      DD_SECRET_KEY: ${DEFECTDOJO_SECRET_KEY:-replace-me-with-a-long-random-secret}
+      DD_CREDENTIAL_AES_256_KEY: ${DEFECTDOJO_CREDENTIAL_AES_256_KEY:-replace-me-with-a-32-char-key}
+      DD_DATABASE_READINESS_TIMEOUT: "60"
+    volumes:
+      - ./docker/extra_settings:/app/docker/extra_settings
+
+  defectdojo-celeryworker:
+    image: defectdojo/defectdojo-django:latest
+    container_name: defectdojo-celeryworker
+    restart: unless-stopped
+    depends_on:
+      defectdojo-initializer:
+        condition: service_completed_successfully
+      defectdojo-postgres:
+        condition: service_started
+      defectdojo-redis:
+        condition: service_started
+    entrypoint:
+      - /wait-for-it.sh
+      - defectdojo-postgres:5432
+      - -t
+      - "60"
+      - --
+      - /entrypoint-celery-worker.sh
+    environment:
+      DD_DATABASE_URL: postgresql://${DEFECTDOJO_DB_USER:-defectdojo}:${DEFECTDOJO_DB_PASSWORD:-defectdojo}@defectdojo-postgres:5432/${DEFECTDOJO_DB_NAME:-defectdojo}
+      DD_CELERY_BROKER_URL: redis://defectdojo-redis:6379/0
+      DD_SECRET_KEY: ${DEFECTDOJO_SECRET_KEY:-replace-me-with-a-long-random-secret}
+      DD_CREDENTIAL_AES_256_KEY: ${DEFECTDOJO_CREDENTIAL_AES_256_KEY:-replace-me-with-a-32-char-key}
+      DD_DATABASE_READINESS_TIMEOUT: "60"
+    volumes:
+      - ./docker/extra_settings:/app/docker/extra_settings
+      - defectdojo_media:/app/media
+
+  defectdojo-initializer:
+    image: defectdojo/defectdojo-django:latest
+    container_name: defectdojo-initializer
+    restart: "no"
+    depends_on:
+      - defectdojo-postgres
+    entrypoint:
+      - /wait-for-it.sh
+      - defectdojo-postgres:5432
+      - --
+      - /entrypoint-initializer.sh
+    environment:
+      DD_DATABASE_URL: postgresql://${DEFECTDOJO_DB_USER:-defectdojo}:${DEFECTDOJO_DB_PASSWORD:-defectdojo}@defectdojo-postgres:5432/${DEFECTDOJO_DB_NAME:-defectdojo}
+      DD_ADMIN_USER: ${DEFECTDOJO_ADMIN_USER:-admin}
+      DD_ADMIN_MAIL: ${DEFECTDOJO_ADMIN_EMAIL:-admin@defectdojo.local}
+      DD_ADMIN_FIRST_NAME: ${DEFECTDOJO_ADMIN_FIRST_NAME:-Admin}
+      DD_ADMIN_LAST_NAME: ${DEFECTDOJO_ADMIN_LAST_NAME:-User}
+      DD_ADMIN_PASSWORD: ${DEFECTDOJO_ADMIN_PASSWORD:-admin123}
+      DD_INITIALIZE: "true"
+      DD_SECRET_KEY: ${DEFECTDOJO_SECRET_KEY:-replace-me-with-a-long-random-secret}
+      DD_CREDENTIAL_AES_256_KEY: ${DEFECTDOJO_CREDENTIAL_AES_256_KEY:-replace-me-with-a-32-char-key}
+      DD_DATABASE_READINESS_TIMEOUT: "60"
+    volumes:
+      - ./docker/extra_settings:/app/docker/extra_settings
+
+  defectdojo-postgres:
+    image: postgres:16-alpine
+    container_name: defectdojo-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DEFECTDOJO_DB_NAME:-defectdojo}
+      POSTGRES_USER: ${DEFECTDOJO_DB_USER:-defectdojo}
+      POSTGRES_PASSWORD: ${DEFECTDOJO_DB_PASSWORD:-defectdojo}
+    volumes:
+      - defectdojo_postgres:/var/lib/postgresql/data
+
+  defectdojo-redis:
+    image: redis:7-alpine
+    container_name: defectdojo-redis
+    restart: unless-stopped
+    volumes:
+      - defectdojo_redis:/data
+
+volumes:
+  jenkins_home:
+  defectdojo_media:
+  defectdojo_postgres:
+  defectdojo_redis:

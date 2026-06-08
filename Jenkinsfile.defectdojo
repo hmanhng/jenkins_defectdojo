@@ -1,0 +1,54 @@
+pipeline {
+  agent any
+
+  environment {
+    DEFECTDOJO_URL = 'http://defectdojo-nginx:8080'
+  }
+
+  stages {
+    stage('Trivy Scan') {
+      steps {
+        sh '''
+          mkdir -p reports
+          trivy fs \
+            --scanners vuln,secret,config \
+            --format json \
+            --output reports/trivy.json \
+            .
+        '''
+      }
+    }
+
+    stage('Upload to DefectDojo') {
+      steps {
+        withCredentials([string(credentialsId: 'defectdojo-api-token', variable: 'DEFECTDOJO_TOKEN')]) {
+          sh '''
+            curl --fail --silent --show-error \
+              -X POST "$DEFECTDOJO_URL/api/v2/reimport-scan/" \
+              -H "Authorization: Token $DEFECTDOJO_TOKEN" \
+              -F "scan_type=Trivy Scan" \
+              -F "file=@reports/trivy.json" \
+              -F "product_type_name=Jenkins" \
+              -F "product_name=$JOB_NAME" \
+              -F "engagement_name=${JOB_NAME} Pipeline" \
+              -F "test_title=Trivy ${JOB_NAME} #${BUILD_NUMBER}" \
+              -F "minimum_severity=Info" \
+              -F "active=true" \
+              -F "verified=true" \
+              -F "close_old_findings=true" \
+              -F "auto_create_context=true" \
+              -F "scan_date=$(date -Iseconds)" \
+              -F "tags=jenkins,trivy" \
+              -F "environment=Development"
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      archiveArtifacts artifacts: 'reports/trivy.json', onlyIfSuccessful: false
+    }
+  }
+}
